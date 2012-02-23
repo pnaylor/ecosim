@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iostream>
 using namespace std;
+#include <omp.h>
 #include "cokus.h"
 //#include "RandMT.h"  // random number generator (not in standard C distribution)
 //using namespace RandMT;
@@ -27,11 +28,9 @@ using namespace std;
 #include <time.h>
 #include <vector>
 
-#define SIZE 256                   // lattice size (must satisfy 2^DIM=SIZE)
-#define DIM 8                                                    //(2^DIM=SIZE)
-#define NSITES (SIZE<<DIM)          // number of cells (=SIZE*SIZE)
-#define T 100                        //(originally 50000) How many time steps to output (T>=1)
-#define BEGIN 10                         // when to start outputs
+
+#define T 300                        //(originally 50000) How many time steps to output (T>=1)
+#define BEGIN 100                         // when to start outputs
 #define MIGRANTPOOL 1000    //Number of new species in pool(#potential migrants)
 int step;
 
@@ -45,6 +44,7 @@ int Simulation_time = 0;
 
 int main(int argc, char *argv[])
 {
+	cout << omp_get_num_procs() << " processors available" << endl;
 
   FILE *fptr;
   char filename[]="richness.txt";
@@ -64,7 +64,6 @@ int main(int argc, char *argv[])
 
   for(int pradeep=0; pradeep<T+BEGIN; pradeep++)
   {
- 
      update_lattice(step);	// run the simulation 1 time step (NSITES cell updates)
      
      //call functions if the simulation has completed BEGIN time steps
@@ -96,7 +95,7 @@ int main(int argc, char *argv[])
      }
   
      step++;
-	 cout << step;
+	 cout << ' ' << step;
 
   }
 

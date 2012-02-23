@@ -1,4 +1,4 @@
-
+                
 // ************************************************************************************
 //        Mussel Disturbance Model (MDM) based on the Forest Fire Model (FFM)
 //        Lattice simulation with cluster algorithm
@@ -12,12 +12,18 @@
 //        Requires cokus.h header file for the cokus random number generator
 // ************************************************************************************
 
+#include <omp.h>
 //#include "RandMT.h"
 
 // *********** Global variables (not recommended but faster) ********//
 
 
+#define SIZE 256                   // lattice size (must satisfy 2^DIM=SIZE)
+#define DIM 8                                                    //(2^DIM=SIZE)
+#define NSITES (SIZE<<DIM)          // number of cells (=SIZE*SIZE)
+
 int matstate[NSITES];                                                               // main lattice state matrix
+int mat_update_state[NSITES];
 int S,Sl,apos,psize,i,j,k,n,loop_size;
 int newNeighbor,xNgh,yNgh,Xmoins,Xplus,Ymoins,Yplus;                            // for neighborhood function
 //int simnbr1,simnbr2;                                                                // simulation loop variables
@@ -41,7 +47,7 @@ void outmap();                                                           // writ
 void outdens(int);                                                         // write the time series to a file
 void cluster();                                                           // cluster algorithm
 int XYNeighbor8(int,int);                                            // neighborhood function
-void update(int);                                                       // apply transition rules on a cell
+void update(int, int);                                                       // apply transition rules on a cell
 void update_gradient(int);                                                       // apply transition rules on a cell with a gradient
 void update_2states_gradient(int);                                                       // apply transition rules on a cell with a gradient
 void update_2states(int);                                                       // apply transition rules with 2 state
@@ -141,6 +147,19 @@ void sp_area_curve();
 //RandMT r;
 
 
+omp_lock_t *new_locks() {
+	int i;
+	omp_lock_t *lock = new omp_lock_t[NSITES];
+	#pragma omp parallel for private(i)
+	for(i=0; i < NSITES; i++) {
+		omp_init_lock(&lock[i]);
+	}
+	return lock;
+}
+
+omp_lock_t *mat_lock;
+
+	
 void init_parameters(){
   /*ifstream input("mdm_par.txt");
   if(!input)
@@ -167,6 +186,8 @@ void init_parameters(){
 	   /*alpha4=alpha4/20;*/
 	   paramValue=alpha4;
 	}
+	
+	//for(t=0;t<NSITES;t++){ mat_update_state[i] = 0; }
   }
 
   
@@ -179,29 +200,69 @@ void init_parameters(){
   //alpha4=alpha4ini; // probability of recovery spreading
   max_dist_size=1;//(int) (SIZE/20);
   loop_size=1;
+  
+  /*
+  mat_lock =  new omplock_t[NSITES];
+	#pragma omp parallel for private(i)
+	for(i=0; i < NSITES; i++) {
+		omp_init_lock(&lock[i]);
+	*/
+	
+	mat_lock = new_locks();
  
 }
 
+int once = 1;
 
 void update_lattice(int tstep){
-  int t;
-  //cout << NSITES << endl;
-  for(t=0;t<NSITES;t++){
-	  //cout << t << ' ';
-	int  c = -1;
-	while(c < 0 || c >= NSITES)
+int t;
+//cout << "t: " << tstep;
+
+//omp_set_num_threads(4);
+  
+//#pragma omp parallel {
+
+//#pragma omp parallel for //ordered numthreads(4)
+for(t=0;t<NSITES;t++){
+	/*#pragma omp critical
 	{
-		c =(int) (randomMT()*(NSITES-1)); // select a cell at random
-		//cout << c << ' ';
+		cout << "updating s" << t << ' ';
 	}
-    update(c);
-  }
-  //cout << endl;
+	//if( once == 1 ) {
+	//	cout << ' ' << omp_get_num_threads() << "-threads ";
+	//	once = 0;
+	//}
+	*/
+	  
+	int  c = -1;
+	while(c < 1 || c >= NSITES)
+	{
+		cout << float(NSITES-1) << ' ' << randomMT() << ' ';
+		cout << (int)(randomMT()*float(NSITES-1)) << endl;
+		//c = (int) (randomMT()*(NSITES-1)); // select a cell at random		 
+		//cout << " intc" << c << ' ';
+	}
+	//#pragma omp critical
+	//{
+	//	cout << "updating s" << c << ' ';
+	//}
+	//cout << c << ' ';
+	
+	int ngh = select_Neighbor(c);
+	
+	omp_set_lock(&mat_lock[c]);
+	omp_set_lock(&mat_lock[ngh]);
+	update(c, ngh);
+	omp_unset_lock(&mat_lock[c]);
+	omp_unset_lock(&mat_lock[ngh]);
+}
+  
+
   
   new_disturbance_size(delta0,max_dist_size); //potentially create a new disturbance
   new_colonization(delta2); //potentially add one or a small number of mussels to a few random sites
   
-  //determine global colonization rate for a new sp.
+  //determine global colonization rate for a new sp?
 
   int colonznNumber=0; //number of cells to be 
                        //colonized by a new species
@@ -226,8 +287,45 @@ void update_lattice(int tstep){
   newSpecies_colonization(colonznNumber);
 
 //    newSpecies_colonization(gamma0);
+}
 
-}           
+// update() function displays hierarchical rules for spread of new species.
+// Trade-off between higher fecundity(prob of spreading to neighbour cell) and lower
+// competitive ability(can be replaced by slower spreading species)
+
+void update(int aPos, int ngh){
+	/*
+	if( omp_get_thread_num() == 0 && once == 1 ) {
+		cout << ' ' << omp_get_num_threads() << "-threads ";
+		once = 0;
+	}*/
+	//cout << aPos << endl;
+	int node_state = matstate[aPos];
+	int new_state = node_state;
+
+	// ************ Transition rules ****************//
+	if( node_state == 2 && XYNeighbor8(aPos,3) > 0 && randomMT() <= alpha0 )
+		new_state = 3;
+	else if( node_state == 3 ) 
+		new_state = 0;
+	else if ( node_state != 3 )
+	{
+		if( ngh == 2 && alpha4 >= randomMT() )
+			new_state = 2;
+		else {
+			if( ngh > 99 && (node_state == 0 || node_state > ngh ) &&
+					( (ngh - 99) * ( (float)1 / MIGRANTPOOL) ) >= randomMT() ) //trade off between fecundity and competitiveness
+				new_state = ngh;
+		}
+	 }
+  
+	//************** end ****************
+
+	//#pragma omp critical //ordered
+	//{
+		matstate[aPos] = new_state;
+	//} //*/
+}
 
 
 
@@ -307,31 +405,6 @@ void new_disturbance_size(int aRate, int max_size){
     }
   }
 }
-
-
-// update() function displays hierarchical rules for spread of new species.
-// Trade-off between higher fecundity(prob of spreading to neighbour cell) and lower
-// competitive ability(can be replaced by slower spreading species)
-
-void update(int aPos){      
-  //cout << aPos << endl;
-  // ************ Transition rules ****************//
-  if(matstate[aPos]==2 && XYNeighbor8(aPos,3)>0 && randomMT()<=alpha0) matstate[aPos]=3;
-  else if(matstate[aPos]==3) matstate[aPos]=0;
-  else if (matstate[aPos]!=3)
-        {  
-           int ngh=select_Neighbor(aPos); 
-           if(ngh==2 && alpha4>=randomMT())
-              matstate[aPos]=2;
-           else 
-	      if(ngh>99 && (matstate[aPos]==0 || matstate[aPos]>ngh) && ((ngh-99)*((float)1/MIGRANTPOOL))>=randomMT()) //trade off between fecundity and competitiveness
-	          matstate[aPos]=ngh;
-         }
-  
-  // ************** end ****************//
-
-}
-
 
 
 void update_gradient(int aPos){

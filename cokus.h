@@ -59,7 +59,7 @@ using namespace std;
    GCC at -O3 optimization so try your options and see what's best for you
 **/
 
-typedef unsigned long uint32;
+typedef unsigned int uint32;
 
 #define N              (624)                 // length of state vector
 #define M              (397)                 // a period parameter
